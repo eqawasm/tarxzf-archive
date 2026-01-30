@@ -8,6 +8,10 @@ import (
 	"log"
 	"os"
 	"path"
+	"path/filepath"
+    "strings"
+     securejoin "github.com/cyphar/filepath-securejoin"
+
 )
 
 var (
@@ -15,8 +19,13 @@ var (
 	commit  = ""
 )
 
-func ExtractTarGz(gzipStream io.Reader) error {
+func ExtractTarGz(gzipStream io.Reader, destDir string) error {
 	uncompressedStream, err := gzip.NewReader(gzipStream)
+	if err != nil {
+		return err
+	}
+	defer uncompressedStream.Close()
+	destAbs, err := filepath.Abs(destDir)
 	if err != nil {
 		return err
 	}
@@ -25,38 +34,42 @@ func ExtractTarGz(gzipStream io.Reader) error {
 
 	for {
 		header, err := tarReader.Next()
-
 		if err == io.EOF {
 			break
 		}
-
 		if err != nil {
 			return err
 		}
-
+		name := filepath.FromSlash(header.Name)
+		name = strings.TrimLeft(name, string(filepath.Separator))
+		if name == "" || name == "." {
+			continue
+		}
+		
+		outPath, err := securejoin.SecureJoin(destAbs, name)
 		mode := header.FileInfo().Mode()
 
 		switch header.Typeflag {
 		case tar.TypeDir:
-			if err := os.Mkdir(header.Name, mode); err != nil {
+			if err := os.Mkdir(outPath, mode.Perm()); err != nil {
 				return err
 			}
+
 		case tar.TypeReg:
-			f, err := os.OpenFile(header.Name, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
+			f, err := os.OpenFile(outPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode.Perm())
 			if err != nil {
 				return err
 			}
-			defer f.Close()
 
 			if _, err := io.Copy(f, tarReader); err != nil {
+				f.Close()
 				return err
 			}
+			f.Close()
 
 		default:
-			err := fmt.Errorf("tar: unknown type %q in %q", header.Typeflag, header.Name)
-			return err
+			return fmt.Errorf("tar: unknown type %q in %q", header.Typeflag, header.Name)
 		}
-
 	}
 	return nil
 }
